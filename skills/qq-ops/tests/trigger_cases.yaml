@@ -1,0 +1,7 @@
+positive:
+  - "把这条通知发到 QQ 群前帮我检查权限"
+  - "解析 OneBot 事件并转成统一消息模型"
+  - "处理 NapCat 收到的群文件"
+negative:
+  - "设计向量数据库 schema"
+  - "评估 rubric 的评分一致性"

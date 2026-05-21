@@ -1,0 +1,10 @@
+positive:
+  - "这篇论文的 ablation study 只去掉了 attention 模块，其他组件没有验证"
+  - "学生报告 accuracy 提升了 0.3%，但没给 error bar，帮我判断是否可信"
+  - "帮我检查这个实验的 baseline 对比是否公平，他们用了 BERT-base 对比 GPT-4"
+  - "验证一下这个消融实验是否覆盖了所有关键模块"
+  - "这个实验结果没有提供 random seed 和环境配置，能复现吗"
+negative:
+  - "帮我写一个 PyTorch 的 DataLoader"
+  - "总结一下这篇论文的 related work"
+  - "这个 QQ 群消息怎么解析"

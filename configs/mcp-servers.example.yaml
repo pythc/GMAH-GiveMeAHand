@@ -1,0 +1,32 @@
+servers:
+  grading-system:
+    enabled: true
+    transport: streamable_http
+    base_url: http://localhost:8100/mcp
+    timeout_seconds: 30
+    scopes:
+      - assignments:read
+      - submissions:read
+      - feedback:write
+    allow_tools:
+      - fetch_submission
+      - save_feedback_draft
+      - publish_grade
+    allow_resources:
+      - course
+      - assignment
+      - rubric
+    allow_prompts:
+      - grading_review
+
+  channel-service:
+    enabled: false
+    transport: streamable_http
+    base_url: http://localhost:8200/mcp
+    timeout_seconds: 15
+    scopes:
+      - messages:read
+      - messages:write
+    allow_tools:
+      - send_message
+      - upload_attachment

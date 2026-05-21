@@ -1,0 +1,87 @@
+{
+  "tools": [
+    {
+      "name": "fetch_assignment",
+      "description": "读取课程作业元数据",
+      "strict": true,
+      "risk_level": "low",
+      "approval_policy": "none",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "assignment_id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["assignment_id"]
+      }
+    },
+    {
+      "name": "fetch_rubric",
+      "description": "读取指定作业和版本的评分标准",
+      "strict": true,
+      "risk_level": "low",
+      "approval_policy": "none",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "assignment_id": { "type": "string", "minLength": 1 },
+          "rubric_version": { "type": "string", "minLength": 1 }
+        },
+        "required": ["assignment_id", "rubric_version"]
+      }
+    },
+    {
+      "name": "fetch_submission",
+      "description": "读取学生提交内容",
+      "strict": true,
+      "risk_level": "low",
+      "approval_policy": "none",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "submission_id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["submission_id"]
+      }
+    },
+    {
+      "name": "save_feedback_draft",
+      "description": "保存评分反馈草稿，不正式发布成绩",
+      "strict": true,
+      "risk_level": "medium",
+      "approval_policy": "policy_based",
+      "idempotency_key_source": "submission_id+draft_revision",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "submission_id": { "type": "string", "minLength": 1 },
+          "draft_revision": { "type": "string", "minLength": 1 },
+          "feedback_markdown": { "type": "string", "minLength": 1 }
+        },
+        "required": ["submission_id", "draft_revision", "feedback_markdown"]
+      }
+    },
+    {
+      "name": "publish_grade",
+      "description": "将评分结果回写到批改系统并向学生发布",
+      "strict": true,
+      "risk_level": "high",
+      "approval_policy": "human_required",
+      "idempotency_key_source": "submission_id+rubric_version",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "submission_id": { "type": "string", "minLength": 1 },
+          "rubric_version": { "type": "string", "minLength": 1 },
+          "score": { "type": "number", "minimum": 0 },
+          "feedback_markdown": { "type": "string", "minLength": 1 }
+        },
+        "required": ["submission_id", "rubric_version", "score", "feedback_markdown"]
+      }
+    }
+  ]
+}

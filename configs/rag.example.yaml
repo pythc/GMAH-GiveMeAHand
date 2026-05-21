@@ -1,0 +1,27 @@
+collections:
+  text:
+    vector_name: dense
+    sparse_vector_name: sparse
+    embedding_model: BAAI/bge-m3
+    chunk_size_tokens: 800
+    chunk_overlap_tokens: 120
+
+  page_visual:
+    vector_name: colpali
+    embedding_model: vidore/colpali-v1.3
+    granularity: page
+
+retrieval:
+  text_top_k: 20
+  visual_top_k: 10
+  fused_top_k: 8
+  reranker: BAAI/bge-reranker-v2-m3
+  require_citations: true
+
+evaluation:
+  metrics:
+    - hit_rate
+    - mrr
+    - recall_at_k
+    - ndcg
+    - faithfulness
