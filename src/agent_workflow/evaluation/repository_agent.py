@@ -205,7 +205,7 @@ class AgenticRepositoryReviewer:
                     ChatCompletionRequest(
                         messages=messages,
                         temperature=0.2,
-                        max_tokens=4000,
+                        max_tokens=8000,
                     )
                 )
                 tool_call = _extract_json_object(result.content)
@@ -665,6 +665,33 @@ class AgenticRepositoryReviewer:
         if not repo_path.exists():
             return {"ok": False, "error": "请先调用 clone_repository"}
         max_commits = min(int(arguments.get("max_commits") or 50), 200)
+
+        # If this is a shallow clone, unshallow it first to get full history
+        shallow_file = repo_path / ".git" / "shallow"
+        if shallow_file.exists():
+            try:
+                subprocess.run(
+                    ["git", "fetch", "--unshallow"],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                )
+            except Exception:  # noqa: BLE001
+                # If unshallow fails, try fetching full history another way
+                try:
+                    subprocess.run(
+                        ["git", "fetch", "--depth=2147483647"],
+                        cwd=str(repo_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
             proc = subprocess.run(
                 [
