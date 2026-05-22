@@ -374,14 +374,14 @@ class AgenticRepositoryReviewer:
                         # Validate report structure
                         structure_errors = _validate_report_structure(message)
                         if structure_errors:
+                            # Inject the full report template for the model to follow
+                            template = _load_report_template()
                             result = {
                                 "ok": False,
-                                "error": (
-                                    f"报告结构不完整，缺少以下必需章节：{', '.join(structure_errors)}。"
-                                    "请按照输出格式要求补全所有章节后重新输出 final_answer。"
-                                ),
+                                "error": template,
                             }
                         else:
+                            # Enforce score cap: no report/PPT → max 6.5
                             result = {
                                 "ok": bool(message),
                                 "message": message or "final_answer.message 不能为空",
@@ -1309,6 +1309,32 @@ def _validate_report_structure(message: str) -> list[str]:
         if section not in message:
             missing.append(section)
     return missing
+
+
+_REPORT_TEMPLATE_CACHE: str | None = None
+
+
+def _load_report_template() -> str:
+    """Load the report template file, used when final_answer structure fails.
+
+    This is the key cc-haha-inspired pattern: inject detailed correction
+    instructions with the exact template to follow, rather than just saying
+    'structure is wrong'. This gives the model a clear target to hit.
+    """
+    global _REPORT_TEMPLATE_CACHE
+    if _REPORT_TEMPLATE_CACHE is not None:
+        return _REPORT_TEMPLATE_CACHE
+    template_path = Path("data/evaluation-report-template.txt")
+    if template_path.exists():
+        _REPORT_TEMPLATE_CACHE = template_path.read_text(encoding="utf-8").strip()
+    else:
+        _REPORT_TEMPLATE_CACHE = (
+            "报告结构不完整。final_answer 必须包含以下章节："
+            "综合评分、终评结论、材料完整性检查、代码工程分析、"
+            "开发过程分析、分项评分、主要问题（至少5条）、修改建议（至少6条）、下一步优先级。"
+            "请重新输出完整报告。"
+        )
+    return _REPORT_TEMPLATE_CACHE
 
 
 def _extract_json_object(content: str) -> dict[str, Any]:
