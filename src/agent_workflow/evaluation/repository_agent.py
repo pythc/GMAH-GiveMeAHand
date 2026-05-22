@@ -177,6 +177,8 @@ class AgenticRepositoryReviewer:
             files: list[str] = []
             history_checked = False
             history_action_taken = False
+            # Track required tool calls for workflow enforcement
+            tools_called: set[str] = set()
             if not _can_call_model(chat_client):
                 return self._fallback_tool_review(
                     clone_url=clone_url,
@@ -231,11 +233,14 @@ class AgenticRepositoryReviewer:
                     topic_title=topic_title,
                     chat_client=chat_client,
                     messages=messages,
+                    tools_called=tools_called,
                 )
                 if tool == "get_review_history" and observation.get("ok"):
                     history_checked = True
                 if tool == "update_review_history" and observation.get("ok"):
                     history_action_taken = True
+                if observation.get("ok"):
+                    tools_called.add(tool)
                 messages.append(ChatMessage(role="assistant", content=result.content))
                 messages.append(
                     ChatMessage(role="user", content=_tool_observation_message(observation))
@@ -248,7 +253,7 @@ class AgenticRepositoryReviewer:
             self._append_cleanup_observation(observations)
             return AgenticRepositoryReview(
                 source_url=clone_url,
-                final_review=final_review[:4000],
+                final_review=final_review[:12000],
                 inspected_files=[item.path for item in evidence],
                 observations=observations,
                 file_evidence=evidence,
@@ -302,6 +307,7 @@ class AgenticRepositoryReviewer:
         topic_title: str,
         chat_client: OpenAICompatibleChatClient | None = None,
         messages: list[ChatMessage] | None = None,
+        tools_called: set[str] | None = None,
     ) -> dict[str, Any]:
         try:
             if tool == "clone_repository":
@@ -353,11 +359,33 @@ class AgenticRepositoryReviewer:
                         "error": "final_answer 前必须先调用 update_review_history",
                     }
                 else:
-                    message = str(arguments.get("message") or "").strip()
-                    result = {
-                        "ok": bool(message),
-                        "message": message or "final_answer.message 不能为空",
-                    }
+                    # Enforce required tools workflow
+                    missing = _check_required_tools(tools_called or set())
+                    if missing:
+                        result = {
+                            "ok": False,
+                            "error": (
+                                f"final_answer 前必须先调用以下工具：{', '.join(missing)}。"
+                                "请先调用这些工具获取数据，再输出最终评价。"
+                            ),
+                        }
+                    else:
+                        message = str(arguments.get("message") or "").strip()
+                        # Validate report structure
+                        structure_errors = _validate_report_structure(message)
+                        if structure_errors:
+                            result = {
+                                "ok": False,
+                                "error": (
+                                    f"报告结构不完整，缺少以下必需章节：{', '.join(structure_errors)}。"
+                                    "请按照输出格式要求补全所有章节后重新输出 final_answer。"
+                                ),
+                            }
+                        else:
+                            result = {
+                                "ok": bool(message),
+                                "message": message or "final_answer.message 不能为空",
+                            }
             else:
                 result = {"ok": False, "error": f"未知工具：{tool}"}
         except Exception as exc:  # noqa: BLE001 - tool loop returns observations
@@ -1247,6 +1275,42 @@ def _join_limited(items: list[str], limit: int) -> str:
     return text[:limit]
 
 
+# Required tools that must be called before final_answer
+_REQUIRED_TOOLS = {"clone_repository", "list_files", "code_metrics", "git_history"}
+
+
+def _check_required_tools(tools_called: set[str]) -> list[str]:
+    """Return list of required tools that haven't been called yet."""
+    missing = _REQUIRED_TOOLS - tools_called
+    return sorted(missing) if missing else []
+
+
+# Required sections in the final report — check flexibly (substring match)
+_REQUIRED_REPORT_SECTIONS = [
+    "综合评分",
+    "终评结论",
+    "分项评分",
+    "主要问题",
+    "修改建议",
+]
+
+
+def _validate_report_structure(message: str) -> list[str]:
+    """Check that the final answer contains all required sections.
+
+    Uses flexible substring matching — accepts ## headers, 【】 brackets,
+    or numbered formats like "一、综合评分".
+    Returns list of missing section names, or empty list if all present.
+    """
+    if not message or len(message) < 200:
+        return ["报告内容过短（至少200字）"]
+    missing = []
+    for section in _REQUIRED_REPORT_SECTIONS:
+        if section not in message:
+            missing.append(section)
+    return missing
+
+
 def _extract_json_object(content: str) -> dict[str, Any]:
     """Extract the first valid top-level JSON object from content.
 
@@ -1322,36 +1386,49 @@ def _tool_loop_task_message(
     )
     return (
         "当前任务：请通过工具循环自主审查 GitHub 仓库，并最终给出可直接发送 QQ 的评价。\n"
-        "你每次只能返回一个 JSON 工具调用，不要输出 JSON 之外的文字。\n"
+        "你每次只能返回一个 JSON 工具调用，不要输出 JSON 之外的文字。\n\n"
+        "【强制工作流程 — 必须按顺序执行，不可跳过】\n"
+        "第1步：clone_repository — 克隆仓库\n"
+        "第2步：list_files — 查看完整文件目录\n"
+        "第3步：code_metrics — 获取代码规模、语言分布、测试、CI 等指标\n"
+        "第4步：git_history — 获取提交历史（提交数、跨度、贡献者、凌晨比例等）\n"
+        "第5步：read_file — 逐个读取 README、核心代码、配置、测试文件\n"
+        "第6步：view_document_page — 对 PDF/PPTX/DOCX 使用视觉查看\n"
+        "第7步：get_review_history — 查询历史评价\n"
+        "第8步：update_review_history — 写入评价记录\n"
+        "第9步：final_answer — 输出最终评价\n\n"
+        "【工具调用约束】\n"
+        "- 系统强制要求：clone_repository、list_files、code_metrics、git_history "
+        "这四个工具必须全部调用成功后才允许调用 final_answer\n"
+        "- 如果尝试跳过任何必需工具直接调用 final_answer，将收到错误并被要求补充\n"
+        "- get_review_history 和 update_review_history 也是 final_answer 的前置条件\n\n"
         "可用工具：\n"
         "1. clone_repository：参数 {\"url\": \"仓库地址\"}\n"
-        "2. list_files：参数 {\"max_files\": 1200}\n"
+        "2. list_files：参数 {\"max_files\": 1200}（可选 path 查看子目录）\n"
         "3. read_file：参数 {\"path\": \"仓库内相对路径\"}\n"
         "4. view_document_page：参数 {\"path\": \"文件路径\", \"page\": 页码}，"
-        "用视觉能力查看 PDF/PPTX/DOCX/图片文件的某一页，适合查看排版、图表、公式\n"
+        "用视觉能力查看 PDF/PPTX/DOCX/图片文件的某一页\n"
         "5. inspect_archive：参数 {\"path\": \"仓库内压缩包相对路径\"}\n"
         "6. retrieve_rag：参数 {\"query\": \"要检索的参考资料问题\"}\n"
         "7. get_review_history：参数 {}，最终评价前必须调用\n"
         "8. update_review_history：参数 {\"topic_name\": \"课题名\", \"score\": 评分, "
         "\"review\": \"评价内容\", \"improved\": true/false, "
-        "\"tool_summary\": \"工具依据\"}，final_answer 前必须调用；"
-        "如果没有明显优化，improved=false，Excel 不会更新\n"
+        "\"tool_summary\": \"工具依据\"}，final_answer 前必须调用\n"
         "9. send_progress：参数 {\"message\": \"要发给用户的简短进度\"}\n"
         "10. run_tests：参数 {\"command\": \"pytest\", \"timeout\": 30}，"
-        "在仓库中运行测试命令（支持 pytest/npm test/go test/make test），"
-        "返回退出码和输出\n"
+        "在仓库中运行测试命令\n"
         "11. git_history：参数 {\"max_commits\": 50}，"
-        "分析 Git 提交历史，返回贡献者、开发周期、提交频率等\n"
+        "分析 Git 提交历史（必须调用！报告中开发过程数据来源于此）\n"
         "12. fetch_url：参数 {\"url\": \"https://...\", \"timeout\": 10}，"
-        "访问外部 URL 获取页面内容，仅支持 http/https\n"
+        "访问外部 URL 获取页面内容\n"
         "13. code_metrics：参数 {}，"
-        "统计仓库代码指标（文件数、行数、语言分布、测试覆盖、CI/Docker 等）\n"
+        "统计仓库代码指标（必须调用！报告中代码工程数据来源于此）\n"
         "14. validate_structure：参数 {\"path\": \"报告.md\", \"type\": \"report\"}，"
-        "验证文档结构完整性（type 可选 report/paper/presentation）\n"
-        "15. final_answer：参数 {\"message\": \"最终评价\"}\n"
+        "验证文档结构完整性\n"
+        "15. final_answer：参数 {\"message\": \"最终 Markdown 格式评价\"}\n"
         "工具调用格式：{\"tool\": \"工具名\", \"arguments\": {...}}\n\n"
-        "【文档查看策略】对于 PDF/PPTX/DOCX 文件，优先用 view_document_page "
-        "视觉查看，不要用 read_file（文本提取容易乱码）。\n\n"
+        "【文档查看策略】PDF/PPTX/DOCX 文件优先用 view_document_page，"
+        "不要用 read_file（文本提取容易乱码）。\n\n"
         f"【进度汇报要求】{progress_section}\n\n"
         f"仓库地址：{url}\n"
         f"课题：{topic_title}\n"

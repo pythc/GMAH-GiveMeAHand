@@ -40,16 +40,35 @@ ToolLogEntry = ActivityLogEntry
 
 
 class ActivityLogStore:
-    """In-memory capped activity log, shared by console evaluation and QQ channel."""
+    """In-memory capped activity log, shared by console evaluation and QQ channel.
+
+    Supports optional WebSocket broadcast: when on_append callbacks are registered,
+    each new log entry is pushed to connected clients in real-time.
+    """
 
     def __init__(self, max_entries: int = 3000) -> None:
         self._logs: list[ActivityLogEntry] = []
         self._max_entries = max_entries
+        self._on_append_callbacks: list[Any] = []  # list[Callable[[ActivityLogEntry], None]]
+
+    def register_on_append(self, callback: Any) -> None:
+        """Register a callback invoked on every new log entry.
+
+        Used by the WebSocket manager to broadcast events in real-time.
+        Callback signature: (entry: ActivityLogEntry) -> None
+        """
+        self._on_append_callbacks.append(callback)
 
     def append(self, entry: ActivityLogEntry) -> None:
         self._logs.append(entry)
         if len(self._logs) > self._max_entries:
             del self._logs[: len(self._logs) - self._max_entries]
+        # Notify all registered callbacks (e.g., WebSocket broadcast)
+        for cb in self._on_append_callbacks:
+            try:
+                cb(entry)
+            except Exception:  # noqa: BLE001
+                pass
 
     def log_tool_call(
         self,

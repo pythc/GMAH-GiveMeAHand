@@ -5,6 +5,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, SecretStr
 
+from agent_workflow.channels.base import ChannelClient
+
 
 class OneBotClientError(RuntimeError):
     """Raised when OneBot HTTP API returns an error."""
@@ -16,11 +18,11 @@ class OneBotSendResult(BaseModel):
     response: dict[str, Any] = Field(default_factory=dict)
 
 
-class OneBotHttpClient:
+class OneBotHttpClient(ChannelClient):
     """Small OneBot v11 HTTP action client.
 
+    Implements the ChannelClient ABC for the QQ/OneBot protocol.
     NapCat 通常可开启 HTTP 服务；不同部署可能是正向 HTTP 或反向 WebSocket。
-    这里先实现 HTTP action 客户端，用于本地联调和发送评价摘要。
     """
 
     def __init__(
@@ -92,6 +94,34 @@ class OneBotHttpClient:
 
     def get_file(self, file_id: str) -> dict[str, Any]:
         return self._action("get_file", {"file_id": file_id}).response
+
+    # ------------------------------------------------------------------
+    # ChannelClient ABC implementation
+    # ------------------------------------------------------------------
+
+    def send_message(
+        self, conversation_id: str, text: str, reply_to: str | None = None
+    ) -> Any:
+        """Send a message via the unified ChannelClient interface."""
+        if conversation_id.startswith("group:"):
+            group_id = conversation_id.removeprefix("group:")
+            return self.send_group_msg(group_id, text, reply_to=reply_to)
+        elif conversation_id.startswith("private:"):
+            user_id = conversation_id.removeprefix("private:")
+            return self.send_private_msg(user_id, text)
+        raise ValueError(f"Unknown conversation format: {conversation_id}")
+
+    def send_file(
+        self, conversation_id: str, data: bytes, filename: str
+    ) -> Any:
+        """Send a file via the unified ChannelClient interface."""
+        if conversation_id.startswith("group:"):
+            group_id = conversation_id.removeprefix("group:")
+            return self.send_group_file_base64(group_id, data, filename)
+        elif conversation_id.startswith("private:"):
+            user_id = conversation_id.removeprefix("private:")
+            return self.send_private_file_base64(user_id, data, filename)
+        raise ValueError(f"Unknown conversation format: {conversation_id}")
 
     def _action(self, action: str, payload: dict[str, Any]) -> OneBotSendResult:
         headers = {}

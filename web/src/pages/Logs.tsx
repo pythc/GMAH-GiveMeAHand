@@ -1,8 +1,8 @@
-import { ReloadOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Select, Space, Switch, Table, Tag, Typography } from 'antd';
+import { ReloadOutlined, WifiOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Select, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
-import { api } from '../api';
+import { api, connectEvaluationWs, type WsEvent } from '../api';
 import { JsonPreview } from '../components/JsonPreview';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import type { ToolLogEntry } from '../types';
@@ -29,25 +29,77 @@ const kindLabels: Record<string, string> = {
 export default function Logs() {
   const [logs, setLogs] = useState<ToolLogEntry[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
   const [kindFilter, setKindFilter] = useState<string | undefined>(undefined);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<{ close: () => void } | null>(null);
   const { loading, run } = useAsyncAction();
 
   const refresh = async () => setLogs(await api.getToolLogs(500));
 
+  // Initial load
   useEffect(() => {
     void run(refresh);
   }, []);
 
+  // WebSocket real-time mode (replaces polling when connected)
   useEffect(() => {
-    if (autoRefresh) {
-      intervalRef.current = setInterval(() => void refresh(), 2000);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    if (!autoRefresh) {
+      wsRef.current?.close();
+      wsRef.current = null;
+      setWsConnected(false);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
     }
+
+    // Try WebSocket first
+    const ws = connectEvaluationWs(null, (event: WsEvent) => {
+      if (event.type === 'ws_connected') {
+        setWsConnected(true);
+        // Stop polling since WS is active
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        return;
+      }
+      if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
+      // Convert WS event to log entry format and prepend
+      const entry: ToolLogEntry = {
+        timestamp: event.timestamp || new Date().toISOString(),
+        kind: event.type as string,
+        session_id: event.session_id || '',
+        tool: event.tool || null,
+        target: event.target || null,
+        status: event.status || null,
+        content: event.content || event.message || null,
+        detail: event.detail || null,
+        arguments: {},
+        metadata: {}
+      };
+      setLogs((prev) => [...prev.slice(-499), entry]);
+    });
+    wsRef.current = ws;
+
+    // Fallback: polling if WS fails to connect within 3s
+    const fallbackTimer = setTimeout(() => {
+      if (!wsConnected && autoRefresh) {
+        intervalRef.current = setInterval(() => void refresh(), 2000);
+      }
+    }, 3000);
+
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearTimeout(fallbackTimer);
+      ws.close();
+      wsRef.current = null;
+      setWsConnected(false);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     };
   }, [autoRefresh]);
 
@@ -73,7 +125,10 @@ export default function Logs() {
               { label: '错误', value: 'error' }
             ]}
           />
-          <Text>自动刷新</Text>
+          <Tooltip title={wsConnected ? 'WebSocket 实时连接' : '轮询模式 (2s)'}>
+            <WifiOutlined style={{ color: wsConnected ? '#52c41a' : '#d9d9d9' }} />
+          </Tooltip>
+          <Text>实时</Text>
           <Switch
             checked={autoRefresh}
             onChange={setAutoRefresh}

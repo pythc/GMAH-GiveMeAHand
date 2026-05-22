@@ -107,6 +107,37 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     app.include_router(evaluation_router)
     app.include_router(qq_router)
 
+    # WebSocket endpoint for real-time evaluation progress
+    from agent_workflow.api.ws import websocket_evaluation_endpoint, ws_manager
+
+    app.websocket("/ws/evaluation")(websocket_evaluation_endpoint)
+
+    # Hook: broadcast log entries to WebSocket clients in real-time
+    from agent_workflow.evaluation.tool_log import ActivityLogEntry, get_tool_log_store
+
+    def _broadcast_log_entry(entry: ActivityLogEntry) -> None:
+        """Push each new log entry to all connected WebSocket clients."""
+        ws_manager.broadcast_sync(
+            {
+                "type": entry.kind.value,
+                "session_id": entry.session_id,
+                "tool": entry.tool,
+                "target": entry.target,
+                "status": entry.status,
+                "content": entry.content,
+                "detail": entry.detail,
+                "timestamp": entry.timestamp,
+            },
+            session_id=entry.session_id or None,
+        )
+
+    get_tool_log_store().register_on_append(_broadcast_log_entry)
+
+    # Register OneBot/QQ channel in the channel registry
+    from agent_workflow.channels.onebot import register_onebot_channel
+
+    register_onebot_channel()
+
     @app.get("/healthz", tags=["system"])
     def healthz() -> dict[str, str]:
         return {"status": "ok", "version": __version__}

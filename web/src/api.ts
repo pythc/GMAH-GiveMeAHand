@@ -173,3 +173,84 @@ export function parseJsonObject(value: string): JsonObject {
   }
   return parsed as JsonObject;
 }
+
+// ---------------------------------------------------------------------------
+// WebSocket helper for real-time evaluation events
+// ---------------------------------------------------------------------------
+
+export type WsEvent = {
+  type: string;
+  session_id?: string;
+  tool?: string;
+  target?: string;
+  status?: string;
+  content?: string;
+  detail?: string;
+  message?: string;
+  timestamp?: string;
+  [key: string]: unknown;
+};
+
+export type WsEventHandler = (event: WsEvent) => void;
+
+/**
+ * Connect to the evaluation WebSocket for real-time progress.
+ *
+ * @param sessionId - Optional session to subscribe to (null = all events)
+ * @param onEvent - Callback for each received event
+ * @returns Object with close() method to disconnect
+ */
+export function connectEvaluationWs(
+  sessionId: string | null,
+  onEvent: WsEventHandler,
+): { close: () => void } {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host;
+  const params = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const url = `${protocol}//${host}/ws/evaluation${params}`;
+
+  let ws: WebSocket | null = new WebSocket(url);
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let closed = false;
+
+  function connect() {
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      onEvent({ type: 'ws_connected' });
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data) as WsEvent;
+        onEvent(data);
+      } catch {
+        // Ignore unparseable messages
+      }
+    };
+
+    ws.onclose = () => {
+      if (!closed) {
+        // Auto-reconnect after 3s
+        reconnectTimer = setTimeout(() => {
+          if (!closed) connect();
+        }, 3000);
+      }
+    };
+
+    ws.onerror = () => {
+      ws?.close();
+    };
+  }
+
+  connect();
+
+  return {
+    close() {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+      ws = null;
+    },
+  };
+}
