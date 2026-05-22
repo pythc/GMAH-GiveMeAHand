@@ -378,8 +378,6 @@ class AgenticRepositoryReviewer:
                                 "error": "final_answer.message 不能为空或过短，请输出完整评价报告。",
                             }
                         else:
-                            # Code-level enforcement: cap score if missing report/PPT
-                            message = _enforce_score_cap(message)
                             result = {
                                 "ok": True,
                                 "message": message,
