@@ -1295,18 +1295,16 @@ def _check_required_tools(tools_called: set[str]) -> list[str]:
 _REQUIRED_REPORT_SECTIONS = [
     "综合评分",
     "终评结论",
-    "分项评分",
     "问题",      # matches "主要问题", "主要不足", "问题与不足" etc.
     "建议",      # matches "修改建议", "建议", "改进建议" etc.
 ]
 
 
 def _validate_report_structure(message: str) -> list[str]:
-    """Check that the final answer contains all required sections and valid arithmetic.
+    """Check that the final answer contains all required sections.
 
     Uses flexible substring matching — accepts ## headers, 【】 brackets,
     or numbered formats like "一、综合评分".
-    Also validates that sub-scores sum to the stated total.
     Returns list of issues, or empty list if all valid.
     """
     if not message or len(message) < 200:
@@ -1315,52 +1313,7 @@ def _validate_report_structure(message: str) -> list[str]:
     for section in _REQUIRED_REPORT_SECTIONS:
         if section not in message:
             missing.append(section)
-    if missing:
-        return missing
-
-    # Arithmetic validation: check sub-scores sum ≈ total
-    import re
-    # Extract the stated total score (X / 10)
-    total_match = re.search(r"(\d+\.?\d*)\s*/\s*10", message)
-    if not total_match:
-        return []  # Can't validate without a parseable score
-
-    stated_total = float(total_match.group(1))
-
-    # Extract sub-scores from the scoring table
-    # Look for patterns like "| 1.5 | 0.8 |" or "| 0.4 |" after dimension names
-    score_dims = [
-        "说明材料完整性", "选题价值", "产物完整度",
-        "技术实现", "实验设计", "可复现性", "成果展示", "课题完成度"
-    ]
-    sub_scores: list[float] = []
-    for line in message.split("\n"):
-        if "|" in line:
-            # Check if this line contains a scoring dimension
-            has_dim = any(dim in line for dim in score_dims)
-            if has_dim:
-                cells = [c.strip() for c in line.split("|") if c.strip()]
-                # Try to find the score cell (usually 3rd column)
-                for cell in cells:
-                    try:
-                        val = float(cell)
-                        if 0 <= val <= 1.5:
-                            sub_scores.append(val)
-                            break
-                    except ValueError:
-                        continue
-
-    if len(sub_scores) >= 6:  # Need at least 6 of 8 dimensions to validate
-        computed_sum = round(sum(sub_scores), 1)
-        # Allow 0.5 tolerance (for rounding and cap logic)
-        if abs(computed_sum - stated_total) > 0.5:
-            return [
-                f"分项评分之和({computed_sum})与综合评分({stated_total})不一致，"
-                f"差值={abs(computed_sum - stated_total):.1f}。"
-                f"请修正：先算分项之和，再应用硬性上限(缺报告/PPT则cap到6.5)。"
-            ]
-
-    return []
+    return missing
 
 
 _REPORT_TEMPLATE_CACHE: str | None = None
