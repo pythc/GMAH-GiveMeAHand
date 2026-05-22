@@ -378,6 +378,8 @@ class AgenticRepositoryReviewer:
                                 "error": "final_answer.message 不能为空或过短，请输出完整评价报告。",
                             }
                         else:
+                            # Code-level enforcement: cap score if missing report/PPT
+                            message = _enforce_score_cap(message)
                             result = {
                                 "ok": True,
                                 "message": message,
@@ -1280,6 +1282,75 @@ def _check_required_tools(tools_called: set[str]) -> list[str]:
     missing = _REQUIRED_TOOLS - tools_called
     return sorted(missing) if missing else []
 
+
+
+def _enforce_score_cap(message: str) -> str:
+    """Code-level enforcement: if report says 结题报告=否 or PPT=否, cap score to 6.5.
+
+    This is the final safety net — even if the model ignores the prompt constraint,
+    we forcibly rewrite the score in the output.
+    """
+    import re
+
+    # Detect missing report or PPT
+    lower = message.lower()
+    missing_report = False
+    missing_ppt = False
+
+    for line in message.split("\n"):
+        # Check table rows like "| 结题报告 | 否 |" or "| 结题报告 | 无 |"
+        if "结题报告" in line and "|" in line:
+            cells = [c.strip() for c in line.split("|")]
+            for cell in cells:
+                if cell in ("否", "无", "未提供", "缺失"):
+                    missing_report = True
+                    break
+        if ("PPT" in line or "汇报" in line) and "|" in line and "结题" not in line:
+            cells = [c.strip() for c in line.split("|")]
+            for cell in cells:
+                if cell in ("否", "无", "未提供", "缺失"):
+                    missing_ppt = True
+                    break
+
+    if not missing_report and not missing_ppt:
+        return message
+
+    # Found missing items — check if score exceeds cap
+    score_match = re.search(r"\*\*(\d+\.?\d*)\s*/\s*10\s*分?\*\*", message)
+    if not score_match:
+        score_match = re.search(r"(\d+\.?\d*)\s*/\s*10\s*分?", message)
+    if not score_match:
+        return message
+
+    score = float(score_match.group(1))
+    cap = 6.5
+
+    if score <= cap:
+        return message
+
+    # Rewrite the score
+    old_score_str = score_match.group(0)
+    new_score_str = old_score_str.replace(score_match.group(1), str(cap))
+    message = message.replace(old_score_str, new_score_str, 1)
+
+    # Rewrite conclusion to "不通过"
+    message = re.sub(
+        r"\*\*通过\*\*",
+        "**不通过**",
+        message,
+    )
+    # Also handle plain text "通过" after 终评结论
+    lines = message.split("\n")
+    for i, line in enumerate(lines):
+        if "终评结论" in line:
+            # Check next few lines for "通过" without "不"
+            for j in range(i, min(i + 3, len(lines))):
+                if "通过" in lines[j] and "不通过" not in lines[j]:
+                    lines[j] = lines[j].replace("通过", "不通过")
+            break
+    message = "\n".join(lines)
+
+    return message
 
 
 def _load_report_template() -> str:
