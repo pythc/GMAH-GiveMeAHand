@@ -179,8 +179,6 @@ class AgenticRepositoryReviewer:
             history_action_taken = False
             # Track required tool calls for workflow enforcement
             tools_called: set[str] = set()
-            # Mutable counter: limit template rejections to prevent infinite loop
-            rejection_state = {"final_answer_rejections": 0}
             if not _can_call_model(chat_client):
                 return self._fallback_tool_review(
                     clone_url=clone_url,
@@ -236,7 +234,6 @@ class AgenticRepositoryReviewer:
                     chat_client=chat_client,
                     messages=messages,
                     tools_called=tools_called,
-                    rejection_state=rejection_state,
                 )
                 if tool == "get_review_history" and observation.get("ok"):
                     history_checked = True
@@ -311,7 +308,6 @@ class AgenticRepositoryReviewer:
         chat_client: OpenAICompatibleChatClient | None = None,
         messages: list[ChatMessage] | None = None,
         tools_called: set[str] | None = None,
-        rejection_state: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         try:
             if tool == "clone_repository":
@@ -375,22 +371,16 @@ class AgenticRepositoryReviewer:
                         }
                     else:
                         message = str(arguments.get("message") or "").strip()
-                        # Validate report structure (max 2 rejections to prevent infinite loop)
-                        rs = rejection_state or {"final_answer_rejections": 0}
-                        structure_errors = _validate_report_structure(message)
-                        if structure_errors and rs["final_answer_rejections"] < 2:
-                            # Inject the full report template for the model to follow
-                            template = _load_report_template()
+                        # Basic validation only (template is already provided upfront)
+                        if not message or len(message) < 100:
                             result = {
                                 "ok": False,
-                                "error": template,
+                                "error": "final_answer.message 不能为空或过短，请输出完整评价报告。",
                             }
-                            rs["final_answer_rejections"] += 1
                         else:
-                            # Accept (either valid or max retries reached)
                             result = {
-                                "ok": bool(message),
-                                "message": message or "final_answer.message 不能为空",
+                                "ok": True,
+                                "message": message,
                             }
             else:
                 result = {"ok": False, "error": f"未知工具：{tool}"}
@@ -1291,54 +1281,52 @@ def _check_required_tools(tools_called: set[str]) -> list[str]:
     return sorted(missing) if missing else []
 
 
-# Required sections in the final report — check flexibly (substring match)
-_REQUIRED_REPORT_SECTIONS = [
-    "综合评分",
-    "终评结论",
-    "问题",      # matches "主要问题", "主要不足", "问题与不足" etc.
-    "建议",      # matches "修改建议", "建议", "改进建议" etc.
-]
-
-
-def _validate_report_structure(message: str) -> list[str]:
-    """Check that the final answer contains all required sections.
-
-    Uses flexible substring matching — accepts ## headers, 【】 brackets,
-    or numbered formats like "一、综合评分".
-    Returns list of issues, or empty list if all valid.
-    """
-    if not message or len(message) < 200:
-        return ["报告内容过短（至少200字）"]
-    missing = []
-    for section in _REQUIRED_REPORT_SECTIONS:
-        if section not in message:
-            missing.append(section)
-    return missing
-
-
-_REPORT_TEMPLATE_CACHE: str | None = None
-
 
 def _load_report_template() -> str:
-    """Load the report template file, used when final_answer structure fails.
-
-    This is the key cc-haha-inspired pattern: inject detailed correction
-    instructions with the exact template to follow, rather than just saying
-    'structure is wrong'. This gives the model a clear target to hit.
-    """
-    global _REPORT_TEMPLATE_CACHE
-    # Always reload (template may be updated without restart)
+    """Load the report template file (with rejection prefix for fallback use)."""
     template_path = Path("data/evaluation-report-template.txt")
     if template_path.exists():
-        _REPORT_TEMPLATE_CACHE = template_path.read_text(encoding="utf-8").strip()
-    else:
-        _REPORT_TEMPLATE_CACHE = (
-            "报告结构不完整。final_answer 必须包含以下章节："
-            "综合评分、终评结论、材料完整性检查、代码工程分析、"
-            "开发过程分析、分项评分、主要问题（至少5条）、修改建议（至少6条）、下一步优先级。"
-            "请重新输出完整报告。"
-        )
-    return _REPORT_TEMPLATE_CACHE
+        return template_path.read_text(encoding="utf-8").strip()
+    return (
+        "报告结构不完整。final_answer 必须包含以下章节："
+        "综合评分、终评结论、问题（至少5条）、建议（至少6条）、下一步优先级。"
+    )
+
+
+def _load_report_template_for_upfront() -> str:
+    """Load the report template for upfront instruction (strips rejection prefix).
+
+    The template file starts with '你的报告格式不完整...' which is only needed
+    when used as a rejection message. For upfront instruction, we strip that
+    and present it as the required output format.
+    """
+    template_path = Path("data/evaluation-report-template.txt")
+    if not template_path.exists():
+        return _get_inline_report_template()
+    content = template_path.read_text(encoding="utf-8").strip()
+    # Strip the rejection prefix line (everything before "评分计算规则")
+    if "评分计算规则" in content:
+        idx = content.index("评分计算规则")
+        content = content[idx:]
+    return (
+        "当你调用 final_answer 时，message 必须严格按照以下格式输出。\n"
+        "所有章节必须保留，数据必须来自工具实际收集的结果。\n\n"
+        + content
+    )
+
+
+def _get_inline_report_template() -> str:
+    """Fallback inline template when file doesn't exist."""
+    return (
+        "当你调用 final_answer 时，message 必须使用 Markdown 格式，包含以下章节：\n"
+        "## 项目名称\n## 综合评分（X / 10 分）\n## 终评结论（通过/不通过）\n"
+        "## 一句话总评\n## 历史对比（表格）\n## 材料完整性检查（表格）\n"
+        "## 代码工程分析（表格 + 核心模块列表）\n## 开发过程分析（表格 + 评价）\n"
+        "## 产物清单（表格）\n## 实验设计与验证（表格 + 结果摘要）\n"
+        "## 主要依据（5条）\n## 优点（3条）\n## 主要问题（至少5条，含影响说明）\n"
+        "## 修改建议（至少6条，含操作步骤和预期效果）\n## 下一步优先级（3条）\n\n"
+        "评分规则：内部按8维度评分（满分10），缺报告/PPT上限6.5。"
+    )
 
 
 def _extract_json_object(content: str) -> dict[str, Any]:
@@ -1414,52 +1402,36 @@ def _tool_loop_task_message(
         "查完历史记录等关键节点，都要调用 send_progress 向用户汇报当前进展。"
         "汇报内容要基于刚完成的真实工具结果，简短自然，不要提前下结论。"
     )
+    # Load report template for upfront instruction
+    report_template = _load_report_template_for_upfront()
     return (
-        "当前任务：请通过工具循环自主审查 GitHub 仓库，并最终给出可直接发送 QQ 的评价。\n"
+        "当前任务：请通过工具循环自主审查 GitHub 仓库，并最终给出评价报告。\n"
         "你每次只能返回一个 JSON 工具调用，不要输出 JSON 之外的文字。\n\n"
-        "【强制工作流程 — 必须按顺序执行，不可跳过】\n"
-        "第1步：clone_repository — 克隆仓库\n"
-        "第2步：list_files — 查看完整文件目录\n"
-        "第3步：code_metrics — 获取代码规模、语言分布、测试、CI 等指标\n"
-        "第4步：git_history — 获取提交历史（提交数、跨度、贡献者、凌晨比例等）\n"
-        "第5步：read_file — 逐个读取 README、核心代码、配置、测试文件\n"
-        "第6步：view_document_page — 对 PDF/PPTX/DOCX 使用视觉查看\n"
-        "第7步：get_review_history — 查询历史评价\n"
-        "第8步：update_review_history — 写入评价记录\n"
-        "第9步：final_answer — 输出最终评价\n\n"
-        "【工具调用约束】\n"
-        "- 系统强制要求：clone_repository、list_files、code_metrics、git_history "
-        "这四个工具必须全部调用成功后才允许调用 final_answer\n"
-        "- 如果尝试跳过任何必需工具直接调用 final_answer，将收到错误并被要求补充\n"
-        "- get_review_history 和 update_review_history 也是 final_answer 的前置条件\n\n"
-        "可用工具：\n"
-        "1. clone_repository：参数 {\"url\": \"仓库地址\"}\n"
-        "2. list_files：参数 {\"max_files\": 1200}（可选 path 查看子目录）\n"
-        "3. read_file：参数 {\"path\": \"仓库内相对路径\"}\n"
-        "4. view_document_page：参数 {\"path\": \"文件路径\", \"page\": 页码}，"
-        "用视觉能力查看 PDF/PPTX/DOCX/图片文件的某一页\n"
-        "5. inspect_archive：参数 {\"path\": \"仓库内压缩包相对路径\"}\n"
-        "6. retrieve_rag：参数 {\"query\": \"要检索的参考资料问题\"}\n"
-        "7. get_review_history：参数 {}，最终评价前必须调用\n"
-        "8. update_review_history：参数 {\"topic_name\": \"课题名\", \"score\": 评分, "
-        "\"review\": \"评价内容\", \"improved\": true/false, "
-        "\"tool_summary\": \"工具依据\"}，final_answer 前必须调用\n"
-        "9. send_progress：参数 {\"message\": \"要发给用户的简短进度\"}\n"
-        "10. run_tests：参数 {\"command\": \"pytest\", \"timeout\": 30}，"
-        "在仓库中运行测试命令\n"
-        "11. git_history：参数 {\"max_commits\": 50}，"
-        "分析 Git 提交历史（必须调用！报告中开发过程数据来源于此）\n"
-        "12. fetch_url：参数 {\"url\": \"https://...\", \"timeout\": 10}，"
-        "访问外部 URL 获取页面内容\n"
-        "13. code_metrics：参数 {}，"
-        "统计仓库代码指标（必须调用！报告中代码工程数据来源于此）\n"
-        "14. validate_structure：参数 {\"path\": \"报告.md\", \"type\": \"report\"}，"
-        "验证文档结构完整性\n"
-        "15. final_answer：参数 {\"message\": \"最终 Markdown 格式评价\"}\n"
+        "═══════════════════════════════════════\n"
+        "第一部分：工具调用流程\n"
+        "═══════════════════════════════════════\n\n"
+        "按以下顺序调用工具收集数据（前4个为强制，跳过将被系统拒绝）：\n"
+        "1. clone_repository {\"url\": \"仓库地址\"} — 克隆仓库【强制】\n"
+        "2. list_files {\"max_files\": 1200} — 查看文件目录【强制】\n"
+        "3. code_metrics {} — 代码指标（文件数/行数/语言/CI/测试）【强制】\n"
+        "4. git_history {\"max_commits\": 50} — 提交历史（跨度/频率/贡献者）【强制】\n"
+        "5. read_file {\"path\": \"相对路径\"} — 读取 README、核心代码等\n"
+        "6. view_document_page {\"path\": \"文件\", \"page\": 1} — 视觉查看 PDF/PPTX/DOCX\n"
+        "7. run_tests {\"command\": \"pytest\"} — 运行测试（可选）\n"
+        "8. get_review_history {} — 查询历史评价【强制】\n"
+        "9. update_review_history {\"topic_name\":..., \"score\":..., \"review\":..., \"improved\":...} — 更新记录【强制】\n"
+        "10. final_answer {\"message\": \"Markdown报告\"} — 输出最终评价\n\n"
+        "其他可用工具：inspect_archive, retrieve_rag, send_progress, fetch_url, validate_structure\n"
         "工具调用格式：{\"tool\": \"工具名\", \"arguments\": {...}}\n\n"
-        "【文档查看策略】PDF/PPTX/DOCX 文件优先用 view_document_page，"
-        "不要用 read_file（文本提取容易乱码）。\n\n"
-        f"【进度汇报要求】{progress_section}\n\n"
+        f"【进度汇报】{progress_section}\n"
+        "【文档策略】PDF/PPTX/DOCX 用 view_document_page 视觉查看，不要 read_file。\n\n"
+        "═══════════════════════════════════════\n"
+        "第二部分：final_answer 输出格式（必须严格遵守）\n"
+        "═══════════════════════════════════════\n\n"
+        f"{report_template}\n\n"
+        "═══════════════════════════════════════\n"
+        "第三部分：当前评测信息\n"
+        "═══════════════════════════════════════\n\n"
         f"仓库地址：{url}\n"
         f"课题：{topic_title}\n"
         f"目标：{topic_goal}\n"
