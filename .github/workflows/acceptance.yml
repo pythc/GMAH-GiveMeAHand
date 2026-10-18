@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: 安装项目及测试依赖
-        run: python -m pip install '.[dev,rag]'
+        run: python -m pip install '.[dev,rag]' pytest-asyncio==1.2.0
       - name: 运行已有测试
         run: python -m pytest -q --junitxml=reports/pytest.xml --cov=agent_workflow --cov-report=xml:reports/coverage.xml
       - name: 保留环境与提交信息
